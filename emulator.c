@@ -76,6 +76,7 @@ void init_cpu(CPU *cpu) {
     cpu->pc = 0;
     cpu->sp = 0;
     memset(cpu->memory, 0, 0xFFFF);
+    // TODO: handle boot rom layering properly
     memcpy(cpu->memory, rom, rom_len);
     memcpy(cpu->memory, boot_rom, boot_rom_len);
 }
@@ -288,17 +289,28 @@ void rl(CPU *cpu, u8 *loc) {
     set_c(cpu, carry != 0);
 }
 
+void cp(CPU *cpu, u8 val) {
+    u8 res = cpu->a - val;
+    set_z(cpu, res == 0);
+    set_n(cpu, 1);
+    set_h(cpu, (cpu->a & 0xf) < (val & 0xf));
+    set_c(cpu, cpu->a < val);
+}
+
+/* A: 18 F: 40 (AF: 1840) */
+/* B: 00 C: 0C (BC: 000C) */
+/* D: 00 E: E0 (DE: 00E0) */
+/* H: 99 L: 2F (HL: 992F) */
+/* PC: 004B SP: FFFE */
+/* ROM: 01 RAM: 00 WRAM: 01 VRAM: 00 */
+/* [-N--] */
+
 void dump_regs(CPU *cpu) {
-    printf("PC = %04x\n", cpu->pc);
-    printf("SP = %04x\n", cpu->sp);
-    printf("A = %02x\n", cpu->a);
-    printf("B = %02x\n", cpu->b);
-    printf("C = %02x\n", cpu->c);
-    printf("D = %02x\n", cpu->d);
-    printf("E = %02x\n", cpu->e);
-    printf("H = %02x\n", cpu->h);
-    printf("L = %02x\n", cpu->l);
-    printf("F = %02x\n", cpu->f);
+    printf("A: %02x F: %02x (AF: %04x)\n", cpu->a, cpu->f, af(cpu));
+    printf("B: %02x C: %02x (BC: %04x)\n", cpu->b, cpu->c, bc(cpu));
+    printf("D: %02x E: %02x (DE: %04x)\n", cpu->d, cpu->e, de(cpu));
+    printf("H: %02x L: %02x (HL: %04x)\n", cpu->h, cpu->l, hl(cpu));
+    printf("PC: %04x SP: %04x\n", cpu->pc, cpu->sp);
     printf("[");
     printf(z(cpu) ? "Z" : "-");
     printf(n(cpu) ? "N" : "-");
@@ -398,7 +410,6 @@ int main() {
     while (true) {
         u8 byte = cpu.memory[cpu.pc];
         dump_regs(&cpu);
-        /* if (cpu.pc == 0x9c) stopped = true; */
         if (stopped) {
             char *prompt = readline("> ");
             if (!prompt) exit(0);
@@ -485,6 +496,11 @@ int main() {
                 rla(&cpu);
                 break;
             }
+            case 0x18: {
+                i8 arg = parse_i8(&cpu);
+                cpu.pc += arg;
+                break;
+            }
             case 0x1a: {
                 cpu.a = dereference_de(&cpu);
                 break;
@@ -540,6 +556,13 @@ int main() {
                 cpu.h = arg;
                 break;
             }
+            case 0x28: {
+                i8 arg = parse_i8(&cpu);
+                if (z(&cpu)) {
+                    cpu.pc += arg;
+                }
+                break;
+            }
             case 0x2a: {
                 cpu.a = dereference_hl(&cpu);
                 set_hl(&cpu, hl(&cpu) + 1);
@@ -562,14 +585,21 @@ int main() {
                 cpu.l = arg;
                 break;
             }
+            case 0x30: {
+                i8 arg = parse_i8(&cpu);
+                if (!c(&cpu)) {
+                    cpu.pc += arg;
+                }
+                break;
+            }
             case 0x31: {
                 u16 arg = parse_u16(&cpu);
                 cpu.sp = arg;
                 break;
             }
             case 0x32: {
-                set_hl(&cpu, hl(&cpu) - 1);
                 set_dereference_hl(&cpu, cpu.a);
+                set_hl(&cpu, hl(&cpu) - 1);
                 break;
             }
             case 0x33: {
@@ -589,9 +619,16 @@ int main() {
                 set_dereference_hl(&cpu, arg);
                 break;
             }
+            case 0x38: {
+                i8 arg = parse_i8(&cpu);
+                if (c(&cpu)) {
+                    cpu.pc += arg;
+                }
+                break;
+            }
             case 0x3a: {
-                set_hl(&cpu, hl(&cpu) - 1);
                 cpu.a = dereference_hl(&cpu);
+                set_hl(&cpu, hl(&cpu) - 1);
                 break;
             }
             case 0x3b: {
@@ -805,24 +842,63 @@ int main() {
             }
             case 0x70: {
                 set_dereference_hl(&cpu, cpu.b);
+                break;
             }
             case 0x71: {
                 set_dereference_hl(&cpu, cpu.c);
+                break;
             }
             case 0x72: {
                 set_dereference_hl(&cpu, cpu.d);
+                break;
             }
             case 0x73: {
                 set_dereference_hl(&cpu, cpu.e);
+                break;
             }
             case 0x74: {
                 set_dereference_hl(&cpu, cpu.h);
+                break;
             }
             case 0x75: {
                 set_dereference_hl(&cpu, cpu.l);
+                break;
             }
             case 0x77: {
                 set_dereference_hl(&cpu, cpu.a);
+                break;
+            }
+            case 0x78: {
+                cpu.a = cpu.b;
+                break;
+            }
+            case 0x79: {
+                cpu.a = cpu.c;
+                break;
+            }
+            case 0x7a: {
+                cpu.a = cpu.d;
+                break;
+            }
+            case 0x7b: {
+                cpu.a = cpu.e;
+                break;
+            }
+            case 0x7c: {
+                cpu.a = cpu.h;
+                break;
+            }
+            case 0x7d: {
+                cpu.a = cpu.l;
+                break;
+            }
+            case 0x7e: {
+                cpu.a = dereference_hl(&cpu);
+                break;
+            }
+            case 0x7f: {
+                cpu.a = cpu.a;
+                break;
             }
             case 0xa8: {
                 xor(&cpu, cpu.b);
@@ -856,12 +932,48 @@ int main() {
                 xor(&cpu, cpu.a);
                 break;
             }
-            case 0xc5: {
-                push(&cpu, bc(&cpu));
+            case 0xb8: {
+                cp(&cpu, cpu.b);
+                break;
+            }
+            case 0xb9: {
+                cp(&cpu, cpu.c);
+                break;
+            }
+            case 0xba: {
+                cp(&cpu, cpu.d);
+                break;
+            }
+            case 0xbb: {
+                cp(&cpu, cpu.e);
+                break;
+            }
+            case 0xbc: {
+                cp(&cpu, cpu.h);
+                break;
+            }
+            case 0xbd: {
+                cp(&cpu, cpu.l);
+                break;
+            }
+            case 0xbe: {
+                cp(&cpu, dereference_hl(&cpu));
+                break;
+            }
+            case 0xbf: {
+                cp(&cpu, cpu.a);
                 break;
             }
             case 0xc1: {
                 set_bc(&cpu, pop(&cpu));
+                break;
+            }
+            case 0xc5: {
+                push(&cpu, bc(&cpu));
+                break;
+            }
+            case 0xc9: {
+                cpu.pc = pop(&cpu);
                 break;
             }
             case 0xcb: {
@@ -899,6 +1011,11 @@ int main() {
                 push(&cpu, hl(&cpu));
                 break;
             }
+            case 0xea: {
+                u16 arg = parse_u16(&cpu);
+                cpu.memory[arg] = cpu.a;
+                break;
+            }
             case 0xf0: {
                 u8 arg = parse_u8(&cpu);
                 cpu.a = cpu.memory[0xff00 + arg];
@@ -914,6 +1031,16 @@ int main() {
             }
             case 0xf5: {
                 push(&cpu, af(&cpu));
+                break;
+            }
+            case 0xfa: {
+                u16 arg = parse_u16(&cpu);
+                cpu.a = cpu.memory[arg];
+                break;
+            }
+            case 0xfe: {
+                u8 arg = parse_u8(&cpu);
+                cp(&cpu, arg);
                 break;
             }
             default: {
