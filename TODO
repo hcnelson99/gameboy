@@ -1,0 +1,7 @@
+* implement true graphics with sdl
+* implement palette
+* factor out cpu code?
+* factor out gpu code and state
+* implement gpu window, scroll, etc
+* implement other tile addressing mode
+* implement gpu timing (lcd status, vblank, etc)

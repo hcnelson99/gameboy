@@ -480,6 +480,7 @@ void cb_prefix(CPU *cpu) {
 }
 
 void draw(CPU *cpu) {
+    // TODO implement other tile addressing mode, use actual screen on bit here
     if ((cpu->memory[lcd_control_address] & 0x10) == 0x10) {
         u8 screen[32*32*8*8];
         memset(screen, 4, 32 * 32 * 8 * 8);
