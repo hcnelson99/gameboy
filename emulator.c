@@ -7,9 +7,14 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
+#define NDEBUG
+
 #define u8 uint8_t
 #define i8 int8_t
 #define u16 uint16_t
+
+void breakpoint() { }
+
 
 typedef struct CPU {
     u8 a;
@@ -23,7 +28,16 @@ typedef struct CPU {
     u16 pc;
     u16 sp;
     u8 memory[0xFFFF];
+    bool boot_rom_enabled;
 } CPU;
+
+// RW memory locations
+const u16 palette_address = 0xff47;
+const u16 scroll_y_address = 0xff42;
+const u16 scroll_x_address = 0xff43;
+const u16 lcd_control_address = 0xff40;
+const u16 ly_address = 0xff44;
+const u16 disable_bootrom_address = 0xff50;
 
 u8 boot_rom[] = {
   0x31, 0xfe, 0xff, 0xaf, 0x21, 0xff, 0x9f, 0x32, // 0x00
@@ -64,21 +78,25 @@ u16 boot_rom_len = 256;
 #define rom_len 0x8000
 u8 rom[rom_len];
 
-void init_cpu(CPU *cpu) {
-    cpu->a = 0;
-    cpu->f = 0;
-    cpu->b = 0;
-    cpu->c = 0;
-    cpu->d = 0;
-    cpu->e = 0;
-    cpu->h = 0;
-    cpu->l = 0;
-    cpu->pc = 0;
-    cpu->sp = 0;
-    memset(cpu->memory, 0, 0xFFFF);
-    // TODO: handle boot rom layering properly
-    memcpy(cpu->memory, rom, rom_len);
-    memcpy(cpu->memory, boot_rom, boot_rom_len);
+u16 make_u16(u8 hi, u8 lo) {
+    return (hi << 8) | lo;
+}
+
+
+u16 af(CPU *cpu) {
+    return make_u16(cpu->a, cpu->f);
+}
+
+u16 hl(CPU *cpu) {
+    return make_u16(cpu->h, cpu->l);
+}
+
+u16 bc(CPU *cpu) {
+    return make_u16(cpu->b, cpu->c);
+}
+
+u16 de(CPU *cpu) {
+    return make_u16(cpu->d, cpu->e);
 }
 
 const int Z_INDEX = 7;
@@ -91,24 +109,138 @@ const u8 N_MASK = 1 << N_INDEX;
 const u8 H_MASK = 1 << H_INDEX;
 const u8 C_MASK = 1 << C_INDEX;
 
-u16 make_u16(u8 hi, u8 lo) {
-    return (hi << 8) | lo;
+bool z(CPU *cpu) {
+    assert((cpu->f & 0xF) == 0);
+    return (cpu->f & Z_MASK) >> Z_INDEX;
+}
+
+bool n(CPU *cpu) {
+    assert((cpu->f & 0xF) == 0);
+    return (cpu->f & N_MASK) >> N_INDEX;
+}
+
+bool h(CPU *cpu) {
+    assert((cpu->f & 0xF) == 0);
+    return (cpu->f & H_MASK) >> H_INDEX;
+}
+
+bool c(CPU *cpu) {
+    assert((cpu->f & 0xF) == 0);
+    return (cpu->f & C_MASK) >> C_INDEX;
+}
+
+
+void dump_regs(CPU *cpu) {
+    printf("A: %02x F: %02x (AF: %04x)\n", cpu->a, cpu->f, af(cpu));
+    printf("B: %02x C: %02x (BC: %04x)\n", cpu->b, cpu->c, bc(cpu));
+    printf("D: %02x E: %02x (DE: %04x)\n", cpu->d, cpu->e, de(cpu));
+    printf("H: %02x L: %02x (HL: %04x)\n", cpu->h, cpu->l, hl(cpu));
+    printf("PC: %04x SP: %04x\n", cpu->pc, cpu->sp);
+    printf("[");
+    printf(z(cpu) ? "Z" : "-");
+    printf(n(cpu) ? "N" : "-");
+    printf(h(cpu) ? "H" : "-");
+    printf(c(cpu) ? "C" : "-");
+    printf("]\n");
+}
+
+
+void init_cpu(CPU *cpu) {
+    cpu->a = 0;
+    cpu->f = 0;
+    cpu->b = 0;
+    cpu->c = 0;
+    cpu->d = 0;
+    cpu->e = 0;
+    cpu->h = 0;
+    cpu->l = 0;
+    cpu->pc = 0;
+    cpu->sp = 0;
+    cpu->boot_rom_enabled = true;
+    memset(cpu->memory, 0, 0xFFFF);
+    // TODO: handle boot rom layering properly
+    memcpy(cpu->memory, rom, rom_len);
+    memcpy(cpu->memory, boot_rom, boot_rom_len);
+}
+
+
+u8 memory(CPU *cpu, u16 address) {
+    if (address <= 0xff) {
+        if (cpu->boot_rom_enabled) {
+            return boot_rom[address];
+        } else {
+            goto passthrough;
+        }
+    } else if ((address <= 0xff26 && address >= 0xff20)
+        || (address <= 0xff3f && address >= 0xff30)
+        || (address <= 0xff1e && address >= 0xff10)) {
+        // sound stuff
+    } else if (address == ly_address) {
+        // vertical line of gpu
+        // TODO
+        return 144;
+    } else if (address == scroll_y_address || address == scroll_x_address) {
+        goto passthrough;
+    } else if (address == disable_bootrom_address) {
+        goto passthrough;
+    } else if (address >= 0xff00 && address <= 0xff7f) {
+        dump_regs(cpu);
+        printf("read address: %04x\n", address);
+        assert(false);
+    }
+passthrough:
+    return cpu->memory[address];
+}
+
+void set_memory(CPU *cpu, u16 address, u8 val) {
+    if (address <= 0xff) {
+        if (cpu->boot_rom_enabled) {
+            // Read only?
+            assert(false);
+        } else {
+            goto passthrough;
+        }
+    } else if ((address <= 0xff26 && address >= 0xff20)
+        || (address <= 0xff3f && address >= 0xff30)
+        || (address <= 0xff1e && address >= 0xff10)) {
+        // sound stuff
+    } else if (address == palette_address) {
+        // TODO
+    } else if (address == scroll_y_address || address == scroll_x_address) {
+        goto passthrough;
+    } else if (address == lcd_control_address) {
+        // TODO
+    } else if (address == ly_address) {
+        // TODO
+        assert(false);
+    } else if (address == disable_bootrom_address) {
+        if (val == 1) {
+            cpu->boot_rom_enabled = false;
+        }
+        goto passthrough;
+    } else if (address >= 0xff00 && address <= 0xff7f) {
+        dump_regs(cpu);
+        printf("write address: %04x\n", address);
+        assert(false);
+    }
+passthrough:
+    cpu->memory[address] = val;
 }
 
 i8 parse_i8(CPU *cpu) {
-    i8 ret = (i8) cpu->memory[cpu->pc];
+    i8 ret = (i8) memory(cpu, cpu->pc);
     cpu->pc += 1;
     return ret;
 }
 
 u8 parse_u8(CPU *cpu) {
-    u16 ret = cpu->memory[cpu->pc];
+    u16 ret = memory(cpu, cpu->pc);
     cpu->pc += 1;
     return ret;
 }
 
 u16 parse_u16(CPU *cpu) {
-    u16 ret = make_u16(cpu->memory[cpu->pc + 1], cpu->memory[cpu->pc]);
+    u16 ret = make_u16(memory(cpu, cpu->pc + 1), memory(cpu, cpu->pc));
     cpu->pc += 2;
     return ret;
 }
@@ -141,68 +273,29 @@ void set_af(CPU *cpu, u16 val) {
     cpu->f = lo(val) & 0xF0;
 }
 
-u16 af(CPU *cpu) {
-    return make_u16(cpu->a, cpu->f);
-}
-
-u16 hl(CPU *cpu) {
-    return make_u16(cpu->h, cpu->l);
-}
-
-u16 bc(CPU *cpu) {
-    return make_u16(cpu->b, cpu->c);
-}
-
-u16 de(CPU *cpu) {
-    return make_u16(cpu->d, cpu->e);
-}
 
 void set_dereference_bc(CPU *cpu, u8 val) {
-    cpu->memory[bc(cpu)] = val;
+    set_memory(cpu, bc(cpu), val);
 }
 
 void set_dereference_de(CPU *cpu, u8 val) {
-    cpu->memory[de(cpu)] = val;
+    set_memory(cpu, de(cpu), val);
 }
 
 void set_dereference_hl(CPU *cpu, u8 val) {
-    cpu->memory[hl(cpu)] = val;
-}
-
-u8 *reference_hl(CPU *cpu) {
-    return &cpu->memory[hl(cpu)];
+    set_memory(cpu, hl(cpu), val);
 }
 
 u8 dereference_bc(CPU *cpu) {
-    return cpu->memory[bc(cpu)];
+    return memory(cpu, bc(cpu));
 }
 
 u8 dereference_de(CPU *cpu) {
-    return cpu->memory[de(cpu)];
+    return memory(cpu, de(cpu));
 }
 
 u8 dereference_hl(CPU *cpu) {
-    return cpu->memory[hl(cpu)];
-}
-
-bool z(CPU *cpu) {
-    assert((cpu->f & 0xF) == 0);
-    return (cpu->f & Z_MASK) >> Z_INDEX;
-}
-
-bool n(CPU *cpu) {
-    assert((cpu->f & 0xF) == 0);
-    return (cpu->f & N_MASK) >> N_INDEX;
-}
-
-bool h(CPU *cpu) {
-    assert((cpu->f & 0xF) == 0);
-    return (cpu->f & H_MASK) >> H_INDEX;
-}
-
-bool c(CPU *cpu) {
-    assert((cpu->f & 0xF) == 0);
-    return (cpu->f & C_MASK) >> C_INDEX;
+    return memory(cpu, hl(cpu));
 }
 
 void set_z(CPU *cpu, bool val) {
@@ -258,14 +351,14 @@ void dec(CPU *cpu, u8 *loc) {
 }
 
 void push(CPU *cpu, u16 val) {
-    cpu->memory[cpu->sp] = lo(val);
-    cpu->memory[cpu->sp + 1] = hi(val);
+    set_memory(cpu, cpu->sp, lo(val));
+    set_memory(cpu, cpu->sp + 1, hi(val));
     cpu->sp -= 2;
 }
 
 u16 pop(CPU *cpu) {
     cpu->sp += 2;
-    u16 ret = make_u16(cpu->memory[cpu->sp + 1], cpu->memory[cpu->sp]);
+    u16 ret = make_u16(memory(cpu, cpu->sp + 1), memory(cpu, cpu->sp));
     return ret;
 }
 
@@ -289,38 +382,27 @@ void rl(CPU *cpu, u8 *loc) {
     set_c(cpu, carry != 0);
 }
 
-void cp(CPU *cpu, u8 val) {
+u8 add(CPU *cpu, u8 val) {
+    u8 res = cpu->a + val;
+    u8 half_carry = (cpu->a & 0xf) + (val & 0xf);
+    set_z(cpu, res == 0);
+    set_n(cpu, 0);
+    set_h(cpu, (half_carry & 0x10) != 0);
+    set_c(cpu, cpu->a > 0xff - val);
+    return res;
+}
+
+u8 sub(CPU *cpu, u8 val) {
     u8 res = cpu->a - val;
     set_z(cpu, res == 0);
     set_n(cpu, 1);
     set_h(cpu, (cpu->a & 0xf) < (val & 0xf));
     set_c(cpu, cpu->a < val);
-}
-
-/* A: 18 F: 40 (AF: 1840) */
-/* B: 00 C: 0C (BC: 000C) */
-/* D: 00 E: E0 (DE: 00E0) */
-/* H: 99 L: 2F (HL: 992F) */
-/* PC: 004B SP: FFFE */
-/* ROM: 01 RAM: 00 WRAM: 01 VRAM: 00 */
-/* [-N--] */
-
-void dump_regs(CPU *cpu) {
-    printf("A: %02x F: %02x (AF: %04x)\n", cpu->a, cpu->f, af(cpu));
-    printf("B: %02x C: %02x (BC: %04x)\n", cpu->b, cpu->c, bc(cpu));
-    printf("D: %02x E: %02x (DE: %04x)\n", cpu->d, cpu->e, de(cpu));
-    printf("H: %02x L: %02x (HL: %04x)\n", cpu->h, cpu->l, hl(cpu));
-    printf("PC: %04x SP: %04x\n", cpu->pc, cpu->sp);
-    printf("[");
-    printf(z(cpu) ? "Z" : "-");
-    printf(n(cpu) ? "N" : "-");
-    printf(h(cpu) ? "H" : "-");
-    printf(c(cpu) ? "C" : "-");
-    printf("]\n");
+    return res;
 }
 
 void cb_prefix(CPU *cpu) {
-    u8 byte = cpu->memory[cpu->pc];
+    u8 byte = memory(cpu, cpu->pc);
     printf("  %02x\n", byte);
     cpu->pc += 1;
     switch (byte) {
@@ -349,7 +431,9 @@ void cb_prefix(CPU *cpu) {
             break;
         }
         case 0x16: {
-            rl(cpu, reference_hl(cpu));
+            u8 val = dereference_hl(cpu);
+            rl(cpu, &val);
+            set_memory(cpu, hl(cpu), val);
             break;
         }
         case 0x17: {
@@ -395,7 +479,40 @@ void cb_prefix(CPU *cpu) {
     }
 }
 
-void breakpoint() { }
+void draw(CPU *cpu) {
+    if ((cpu->memory[lcd_control_address] & 0x10) == 0x10) {
+        u8 screen[32*32*8*8];
+        memset(screen, 4, 32 * 32 * 8 * 8);
+        bool print = false;
+        for (int row = 0; row < 32; row++) {
+            for (int col = 0; col < 32; col++) {
+                for (int r = 0; r < 8; r++) {
+                    for (int c = 0; c < 8; c++) {
+                        u8 tile = cpu->memory[0x9800 + row * 32 + col];
+                        u8 lo_pixels = cpu->memory[0x8000 + tile * 2 * 8 + r * 2];
+                        u8 hi_pixels = cpu->memory[0x8000 + tile * 2 * 8 + r * 2 + 1];
+                        u8 lo = (lo_pixels >> (7 - c)) & 0x1;
+                        u8 hi = (hi_pixels >> (7 - c)) & 0x1;
+                        u8 pixel = (hi << 1) | lo;
+                        if (pixel) print = true;
+                        screen[row * 8 * 32 * 8 + col * 8 + r * 8 * 32 + c] = pixel;
+                    }
+                }
+            }
+        }
+
+        if (print) {
+            for (int i = 0; i < 32 * 8; i++) {
+                for (int j = 0; j < 32 * 8; j++) {
+                    u8 pix = screen[i * 32 * 8 + j];
+                    char disp[] = {' ', '.', 'O', '#', 'E'};
+                    printf("%c", disp[pix]);
+                }
+                printf("\n");
+            }
+        }
+    }
+}
 
 CPU cpu;
 
@@ -408,8 +525,13 @@ int main() {
 
     init_cpu(&cpu);
     while (true) {
-        u8 byte = cpu.memory[cpu.pc];
+        draw(&cpu);
+
+        u8 byte = memory(&cpu, cpu.pc);
         dump_regs(&cpu);
+        if (cpu.pc == 0x100) {
+            stopped = true;
+        }
         if (stopped) {
             char *prompt = readline("> ");
             if (!prompt) exit(0);
@@ -607,11 +729,15 @@ int main() {
                 break;
             }
             case 0x34: {
-                inc(&cpu, reference_hl(&cpu));
+                u8 val = dereference_hl(&cpu);
+                inc(&cpu, &val);
+                set_memory(&cpu, hl(&cpu), val);
                 break;
             }
             case 0x35: {
-                dec(&cpu, reference_hl(&cpu));
+                u8 val = dereference_hl(&cpu);
+                dec(&cpu, &val);
+                set_memory(&cpu, hl(&cpu), val);
                 break;
             }
             case 0x36: {
@@ -900,6 +1026,70 @@ int main() {
                 cpu.a = cpu.a;
                 break;
             }
+            case 0x80: {
+                cpu.a = add(&cpu, cpu.b);
+                break;
+            }
+            case 0x81: {
+                cpu.a = add(&cpu, cpu.c);
+                break;
+            }
+            case 0x82: {
+                cpu.a = add(&cpu, cpu.d);
+                break;
+            }
+            case 0x83: {
+                cpu.a = add(&cpu, cpu.e);
+                break;
+            }
+            case 0x84: {
+                cpu.a = add(&cpu, cpu.h);
+                break;
+            }
+            case 0x85: {
+                cpu.a = add(&cpu, cpu.l);
+                break;
+            }
+            case 0x86: {
+                cpu.a = add(&cpu, dereference_hl(&cpu));
+                break;
+            }
+            case 0x87: {
+                cpu.a = add(&cpu, cpu.a);
+                break;
+            }
+            case 0x90: {
+                cpu.a = sub(&cpu, cpu.b);
+                break;
+            }
+            case 0x91: {
+                cpu.a = sub(&cpu, cpu.c);
+                break;
+            }
+            case 0x92: {
+                cpu.a = sub(&cpu, cpu.d);
+                break;
+            }
+            case 0x93: {
+                cpu.a = sub(&cpu, cpu.e);
+                break;
+            }
+            case 0x94: {
+                cpu.a = sub(&cpu, cpu.h);
+                break;
+            }
+            case 0x95: {
+                cpu.a = sub(&cpu, cpu.l);
+                break;
+            }
+            case 0x96: {
+                cpu.a = sub(&cpu, dereference_hl(&cpu));
+                break;
+            }
+            case 0x97: {
+                cpu.a = sub(&cpu, cpu.a);
+                break;
+            }
             case 0xa8: {
                 xor(&cpu, cpu.b);
                 break;
@@ -933,35 +1123,35 @@ int main() {
                 break;
             }
             case 0xb8: {
-                cp(&cpu, cpu.b);
+                sub(&cpu, cpu.b);
                 break;
             }
             case 0xb9: {
-                cp(&cpu, cpu.c);
+                sub(&cpu, cpu.c);
                 break;
             }
             case 0xba: {
-                cp(&cpu, cpu.d);
+                sub(&cpu, cpu.d);
                 break;
             }
             case 0xbb: {
-                cp(&cpu, cpu.e);
+                sub(&cpu, cpu.e);
                 break;
             }
             case 0xbc: {
-                cp(&cpu, cpu.h);
+                sub(&cpu, cpu.h);
                 break;
             }
             case 0xbd: {
-                cp(&cpu, cpu.l);
+                sub(&cpu, cpu.l);
                 break;
             }
             case 0xbe: {
-                cp(&cpu, dereference_hl(&cpu));
+                sub(&cpu, dereference_hl(&cpu));
                 break;
             }
             case 0xbf: {
-                cp(&cpu, cpu.a);
+                sub(&cpu, cpu.a);
                 break;
             }
             case 0xc1: {
@@ -996,7 +1186,7 @@ int main() {
             }
             case 0xe0: {
                 u8 arg = parse_u8(&cpu);
-                cpu.memory[0xff00 + arg] = cpu.a;
+                set_memory(&cpu, 0xff00 + arg, cpu.a);
                 break;
             }
             case 0xe1: {
@@ -1004,7 +1194,7 @@ int main() {
                 break;
             }
             case 0xe2: {
-                cpu.memory[0xff00 + cpu.c] = cpu.a;
+                set_memory(&cpu, 0xff00 + cpu.c, cpu.a);
                 break;
             }
             case 0xe5: {
@@ -1013,12 +1203,12 @@ int main() {
             }
             case 0xea: {
                 u16 arg = parse_u16(&cpu);
-                cpu.memory[arg] = cpu.a;
+                set_memory(&cpu, arg, cpu.a);
                 break;
             }
             case 0xf0: {
                 u8 arg = parse_u8(&cpu);
-                cpu.a = cpu.memory[0xff00 + arg];
+                cpu.a = memory(&cpu, 0xff00 + arg);
                 break;
             }
             case 0xf1: {
@@ -1026,7 +1216,7 @@ int main() {
                 break;
             }
             case 0xf2: {
-                cpu.a = cpu.memory[0xff00 + cpu.c];
+                cpu.a = memory(&cpu, 0xff00 + cpu.c);
                 break;
             }
             case 0xf5: {
@@ -1035,12 +1225,12 @@ int main() {
             }
             case 0xfa: {
                 u16 arg = parse_u16(&cpu);
-                cpu.a = cpu.memory[arg];
+                cpu.a = memory(&cpu, arg);
                 break;
             }
             case 0xfe: {
                 u8 arg = parse_u8(&cpu);
-                cp(&cpu, arg);
+                sub(&cpu, arg);
                 break;
             }
             default: {
